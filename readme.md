@@ -41,3 +41,13 @@ curl -X POST http://localhost:3030/scheduler/tasks \
           "amount": 1000000
         }'
 ```
+
+## Next Steps
+
+1. Persist Completed Tasks – Store task history in a PostgreSQL database.
+2. Add Task Progress Reporting – Use WebSockets or periodic polling for task monitoring.
+3. Improve Error Handling
+5. Task Prioritization & Scheduling – Implement priority-based execution for tasks.
+6. Docker Support – Containerize the application for easier deployment.
+7. Implement Solana Transfer task
+8. Configuration File Support
