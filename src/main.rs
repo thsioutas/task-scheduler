@@ -1,9 +1,14 @@
 use api::configure_app;
 use clap::Parser;
+use scheduler::TaskScheduler;
 use tracing::{info, Level};
 use tracing_subscriber::fmt;
 
 mod api;
+mod scheduler;
+
+// TODO: Move to config
+const MAX_TASKS: usize = 100;
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -21,10 +26,10 @@ async fn main() {
     let subscriber = fmt().with_max_level(args.verbosity).finish();
     tracing::subscriber::set_global_default(subscriber).expect("Failed to set subscriber");
 
+    let task_scheduler = TaskScheduler::new(MAX_TASKS);
     info!("Task scheduler started");
-
     // Configure API
-    let app = configure_app();
+    let app = configure_app(task_scheduler);
 
     // Start HTTP server on localhost:3030
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3030")
