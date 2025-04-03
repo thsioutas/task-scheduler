@@ -42,6 +42,9 @@ curl -X POST http://localhost:3030/scheduler/tasks \
         }'
 ```
 
+## Design
+For some design choices see [here](design.md).
+
 ## Next Steps
 
 - [ ] Persist Completed Tasks – Store task history in a PostgreSQL database.

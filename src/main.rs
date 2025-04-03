@@ -1,6 +1,7 @@
 use api::configure_app;
 use clap::Parser;
-use scheduler::TaskScheduler;
+use scheduler::{InMemoryStorage, TaskScheduler};
+use std::sync::Arc;
 use tracing::{info, Level};
 use tracing_subscriber::fmt;
 
@@ -25,11 +26,11 @@ async fn main() {
     // Setup logger
     let subscriber = fmt().with_max_level(args.verbosity).finish();
     tracing::subscriber::set_global_default(subscriber).expect("Failed to set subscriber");
-
-    let task_scheduler = TaskScheduler::new(MAX_TASKS);
+    let task_storage = InMemoryStorage::new();
+    let task_scheduler = TaskScheduler::new(MAX_TASKS, task_storage);
     info!("Task scheduler started");
     // Configure API
-    let app = configure_app(task_scheduler);
+    let app = configure_app(Arc::new(task_scheduler));
 
     // Start HTTP server on localhost:3030
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3030")
