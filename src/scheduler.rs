@@ -15,6 +15,16 @@ use tokio::sync::RwLock as AsyncRwLock;
 use tracing::info;
 use uuid::Uuid;
 
+use solana_rpc_client::rpc_client::RpcClient;
+use solana_sdk::{
+    commitment_config::CommitmentConfig,
+    message::Message,
+    pubkey::Pubkey,
+    signature::{read_keypair_file, Signer},
+    transaction::Transaction,
+};
+use solana_system_interface::instruction;
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
 pub enum Task {
@@ -24,7 +34,7 @@ pub enum Task {
 
 #[derive(Debug, Deserialize)]
 pub struct SolanaTransferTask {
-    pub payer: String,
+    pub net: String,
     pub recipient: String,
     pub amount: f64,
 }
@@ -103,17 +113,52 @@ async fn run_scheduler<T: TaskStorage>(
 }
 
 async fn process_solana_transfer(task: SolanaTransferTask) -> Result<(), String> {
-    // Simulate processing
-    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-
+    // Validate amount
     if task.amount <= 0.0 {
         return Err("Invalid transfer amount".to_string());
     }
 
+    let payer_keypair_path = std::env::var("SERVER_KEYPAIR_PATH")
+        .map_err(|_| "SERVER_KEYPAIR_PATH is not set in env".to_string())?;
+
+    // Load server keypair from file or env var
+    let payer = read_keypair_file(&payer_keypair_path)
+        .map_err(|e| format!("Failed to read server keypair: {e}"))?;
+
+    // Create RPC client
+    let client = RpcClient::new_with_commitment(task.net, CommitmentConfig::confirmed());
+
+    // Parse recipient
+    let recipient_pubkey = task
+        .recipient
+        .parse::<Pubkey>()
+        .map_err(|_| "Invalid recipient pubkey".to_string())?;
+
+    // Convert SOL to lamports
+    let lamports = (task.amount * 1_000_000_000f64) as u64;
+
+    // Get recent blockhash
+    let blockhash = client
+        .get_latest_blockhash()
+        .map_err(|e| format!("Failed to get blockhash: {e}"))?;
+
+    // Build transaction
+    let instruction = instruction::transfer(&payer.pubkey(), &recipient_pubkey, lamports);
+    let message = Message::new(&[instruction], Some(&payer.pubkey()));
+    let transaction = Transaction::new(&[&payer], message, blockhash);
+
+    // Send and confirm
+    client
+        .send_and_confirm_transaction(&transaction)
+        .map_err(|e| format!("Transfer failed: {e}"))?;
+
     info!(
-        "Successfully processed SOL transfer of {} SOL from {} to {}.",
-        task.amount, task.payer, task.recipient
+        "✅ Transferred {} SOL from {} to {}",
+        task.amount,
+        payer.pubkey(),
+        task.recipient
     );
+
     Ok(())
 }
 

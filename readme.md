@@ -36,9 +36,9 @@ curl -X POST http://localhost:3030/scheduler/tasks \
      -H "Content-Type: application/json" \
      -d '{
           "type": "SolanaTransfer",
-          "payer": "YourSolanaAddress",
           "recipient": "YourSolanaAddress",
-          "amount": 1000000
+          "amount": 1.5,
+          "net": "http://localhost:8899"
         }'
 ```
 
@@ -52,6 +52,6 @@ For some design choices see [here](design.md).
 - [ ] Improve Error Handling
 - [ ] Task Prioritization & Scheduling – Implement priority-based execution for tasks.
 - [ ] Docker Support – Containerize the application for easier deployment.
-- [ ] Implement Solana Transfer task
+- [x] Implement Solana Transfer task
 - [ ] Configuration File Support
 - [ ] OpenAPI docs

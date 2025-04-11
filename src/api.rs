@@ -17,7 +17,7 @@ async fn root() -> Json<RootResponse> {
     Json(RootResponse {
         id: "SchedulerRootEndpoint".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
-        tasks: scheduler_url("tasks"),
+        tasks: scheduler_url("/tasks"),
     })
 }
 
@@ -37,7 +37,7 @@ async fn task_create<T: TaskStorage>(
     State(task_scheduler): State<Arc<TaskScheduler<T>>>,
     Json(payload): Json<Task>,
 ) -> Result<Json<TaskCreatedResponse>, TaskSchedulerError> {
-    let task = payload.into();
+    let task = payload;
     trace!("Add a new task: {:?}", task);
     let id = task_scheduler.submit_task(task).await?;
     let url = scheduler_url(&format!("/tasks/{}", id));
@@ -123,7 +123,7 @@ mod tests {
     async fn test_api_task_create() {
         let task_scheduler = Arc::new(TaskScheduler::new_mock());
         let task_request = Task::SolanaTransfer(SolanaTransferTask {
-            payer: "payer_pubkey".to_string(),
+            net: "devnet".to_string(),
             recipient: "recipient_pubkey".to_string(),
             amount: 2.1,
         });

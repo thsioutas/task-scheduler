@@ -23,6 +23,8 @@ struct Args {
 async fn main() {
     let args = Args::parse();
 
+    dotenv::dotenv().ok();
+
     // Setup logger
     let subscriber = fmt().with_max_level(args.verbosity).finish();
     tracing::subscriber::set_global_default(subscriber).expect("Failed to set subscriber");
