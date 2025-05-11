@@ -35,7 +35,7 @@ async fn task_collection<T: TaskStorage>(
 
 async fn task_create<T: TaskStorage>(
     State(task_scheduler): State<Arc<TaskScheduler<T>>>,
-    Json(payload): Json<Task>,
+    Json(payload): Json<TaskPayload>,
 ) -> Result<Json<TaskCreatedResponse>, TaskSchedulerError> {
     let task = payload;
     trace!("Add a new task: {:?}", task);
@@ -50,7 +50,7 @@ async fn get_task<T: TaskStorage>(
     Path(id): Path<String>,
 ) -> Result<Json<TaskResponse>, TaskSchedulerError> {
     trace!("Get task info: {}", id);
-    let status = task_scheduler.get_task_status(&id).await;
+    let status = task_scheduler.get_task_status(&id).await?;
 
     Ok(Json(TaskResponse { id, status }))
 }
@@ -93,8 +93,8 @@ mod tests {
 
     #[test]
     fn test_scheduler_url() {
-        assert_eq!("/scheduler/", scheduler_url(""));
-        assert_eq!("/scheduler/tasks", scheduler_url("tasks"));
+        assert_eq!("/scheduler", scheduler_url(""));
+        assert_eq!("/scheduler/tasks", scheduler_url("/tasks"));
     }
 
     #[tokio::test]
@@ -103,7 +103,7 @@ mod tests {
         let expected_response = RootResponse {
             id: "SchedulerRootEndpoint".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
-            tasks: scheduler_url("tasks"),
+            tasks: scheduler_url("/tasks"),
         };
         assert_eq!(response, expected_response);
     }
@@ -122,11 +122,15 @@ mod tests {
     #[tokio::test]
     async fn test_api_task_create() {
         let task_scheduler = Arc::new(TaskScheduler::new_mock());
-        let task_request = Task::SolanaTransfer(SolanaTransferTask {
+        let task_type = TaskType::SolanaTransfer(SolanaTransferTask {
             net: "devnet".to_string(),
             recipient: "recipient_pubkey".to_string(),
             amount: 2.1,
         });
+        let task_request = TaskPayload {
+            priority: 1,
+            task_type,
+        };
 
         let response = task_create(
             axum::extract::State(task_scheduler.clone()),

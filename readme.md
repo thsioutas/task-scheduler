@@ -23,6 +23,7 @@ cargo run -- --verbosity 5
 curl -X POST http://localhost:3030/scheduler/tasks \
      -H "Content-Type: application/json" \
      -d '{
+          "priority": 1,
           "type": "MandelbrotCompute",
           "width": 800,
           "height": 600,
@@ -35,6 +36,7 @@ curl -X POST http://localhost:3030/scheduler/tasks \
 curl -X POST http://localhost:3030/scheduler/tasks \
      -H "Content-Type: application/json" \
      -d '{
+          "priority": 99,
           "type": "SolanaTransfer",
           "recipient": "YourSolanaAddress",
           "amount": 1.5,
@@ -49,8 +51,8 @@ For some design choices see [here](design.md).
 
 - [ ] Persist Completed Tasks – Store task history in a PostgreSQL database.
 - [ ] Add Task Progress Reporting – Use WebSockets or periodic polling for task monitoring.
-- [ ] Improve Error Handling
-- [ ] Task Prioritization & Scheduling – Implement priority-based execution for tasks.
+- [x] Improve Error Handling
+- [x] Task Prioritization & Scheduling – Implement priority-based execution for tasks.
 - [ ] Docker Support – Containerize the application for easier deployment.
 - [x] Implement Solana Transfer task
 - [ ] Configuration File Support

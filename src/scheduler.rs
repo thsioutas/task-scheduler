@@ -7,11 +7,15 @@ use axum::{
 use image::{ImageBuffer, Rgb};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::sync::Arc;
+use std::{
+    cmp::Ordering,
+    collections::{BinaryHeap, HashMap},
+    str::FromStr,
+    time::Duration,
+};
 use thiserror::Error;
-use tokio::sync::mpsc;
-use tokio::sync::RwLock as AsyncRwLock;
+use tokio::sync::{Mutex as AsyncMutex, RwLock as AsyncRwLock};
 use tracing::info;
 use uuid::Uuid;
 
@@ -25,9 +29,44 @@ use solana_sdk::{
 };
 use solana_system_interface::instruction;
 
+pub struct Task {
+    id: Uuid,
+    payload: TaskPayload,
+}
+
+impl PartialEq for Task {
+    fn eq(&self, other: &Self) -> bool {
+        self.payload.priority == other.payload.priority && self.id == other.id
+    }
+}
+
+impl Eq for Task {}
+
+impl PartialOrd for Task {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Task {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match other.payload.priority.cmp(&self.payload.priority) {
+            Ordering::Equal => self.id.cmp(&other.id),
+            ord => ord,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TaskPayload {
+    pub priority: u16,
+    #[serde(flatten)]
+    pub task_type: TaskType,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
-pub enum Task {
+pub enum TaskType {
     SolanaTransfer(SolanaTransferTask),
     MandelbrotCompute(MandelbrotComputeTask),
 }
@@ -46,69 +85,98 @@ pub struct MandelbrotComputeTask {
     pub max_iterations: u32,
 }
 
-#[derive(Clone)]
 pub struct TaskScheduler<T> {
-    tx: mpsc::Sender<(String, Task)>,
+    task_queue: Arc<AsyncMutex<BinaryHeap<Task>>>,
     task_storage: Arc<T>,
+    max_tasks: usize,
 }
 
 impl<T: TaskStorage> TaskScheduler<T> {
     /// Initialize the scheduler with a channel
     pub fn new(max_tasks: usize, task_storage: T) -> Self {
-        let (tx, rx) = mpsc::channel(max_tasks);
         let task_storage = Arc::new(task_storage);
-        tokio::spawn(run_scheduler(rx, Arc::clone(&task_storage)));
-        Self { tx, task_storage }
+        let task_queue = Arc::new(AsyncMutex::new(BinaryHeap::new()));
+        tokio::spawn(run_scheduler(
+            Arc::clone(&task_queue),
+            Arc::clone(&task_storage),
+        ));
+
+        Self {
+            task_queue,
+            task_storage,
+            max_tasks,
+        }
     }
 
     /// Submit a new task
-    pub async fn submit_task(&self, task: Task) -> Result<String, TaskSchedulerError> {
-        let task_id = Uuid::new_v4().to_string();
-        self.tx.send((task_id.clone(), task)).await?;
+    pub async fn submit_task(&self, payload: TaskPayload) -> Result<String, TaskSchedulerError> {
+        let mut task_queue = self.task_queue.lock().await;
+        if task_queue.len() >= self.max_tasks {
+            return Err(TaskSchedulerError::QueueFull);
+        }
+        let task_id = Uuid::new_v4();
+        let task = Task {
+            id: task_id,
+            payload,
+        };
+        task_queue.push(task);
         // Insert task as 'Ongoing'
-        self.task_storage
-            .insert(task_id.clone(), TaskStatus::Ongoing)
-            .await;
+        self.task_storage.insert(task_id, TaskStatus::Ongoing).await;
         info!("Task {} submitted to queue.", task_id);
-        Ok(task_id)
+        Ok(task_id.to_string())
     }
 
-    pub async fn get_task_status(&self, task_id: &str) -> TaskStatus {
+    /// Retrieve the task status of the provided task ID
+    // TODO: Consider providing more info on status: priority, type, status
+    pub async fn get_task_status(&self, task_id: &str) -> Result<TaskStatus, TaskSchedulerError> {
         let tasks = self.task_storage.get_tasks().await;
-        tasks.get(task_id).unwrap().clone()
+        let uuid = Uuid::from_str(task_id).map_err(|_| TaskSchedulerError::NoSuchId)?;
+        let status = tasks.get(&uuid).ok_or(TaskSchedulerError::NoSuchId)?;
+        Ok(status.clone())
     }
 
-    pub async fn get_tasks(&self) -> Vec<String> {
+    /// Retrieve all available task ID
+    pub async fn get_tasks(&self) -> Vec<Uuid> {
         let tasks = self.task_storage.get_tasks().await;
         tasks.into_iter().map(|task| task.0).collect()
     }
 }
 
 async fn run_scheduler<T: TaskStorage>(
-    mut rx: mpsc::Receiver<(String, Task)>,
+    task_queue: Arc<AsyncMutex<BinaryHeap<Task>>>,
     task_storage: Arc<T>,
 ) {
-    while let Some((task_id, task)) = rx.recv().await {
-        let storage = Arc::clone(&task_storage);
-        tokio::spawn(async move {
-            let result = match task {
-                Task::SolanaTransfer(solana_transfer_task) => {
-                    info!("Processing SOL transfer for {}", task_id);
-                    process_solana_transfer(solana_transfer_task).await
-                }
-                Task::MandelbrotCompute(mandelbrot_task) => {
-                    info!("Computing Mandelbrot set for {}", task_id);
-                    process_mandelbrot_task(task_id.clone(), mandelbrot_task).await
-                }
-            };
+    const POLL_INTERVAL: Duration = Duration::from_millis(100);
+    loop {
+        let maybe_task = {
+            let mut queue = task_queue.lock().await;
+            queue.pop()
+        };
 
-            // Update task status based on result
-            let new_status = match result {
-                Ok(_) => TaskStatus::Completed,
-                Err(err) => TaskStatus::Failed(err),
-            };
-            storage.update(task_id, new_status).await;
-        });
+        if let Some(task) = maybe_task {
+            let storage = Arc::clone(&task_storage);
+            tokio::spawn(async move {
+                let result = match task.payload.task_type {
+                    TaskType::SolanaTransfer(solana_transfer_task) => {
+                        info!("Processing SOL transfer for {}", task.id);
+                        process_solana_transfer(solana_transfer_task).await
+                    }
+                    TaskType::MandelbrotCompute(mandelbrot_task) => {
+                        info!("Computing Mandelbrot set for {}", task.id);
+                        process_mandelbrot_task(task.id.to_string(), mandelbrot_task).await
+                    }
+                };
+
+                // Update task status based on result
+                let new_status = match result {
+                    Ok(_) => TaskStatus::Completed,
+                    Err(err) => TaskStatus::Failed(err),
+                };
+                storage.update(task.id, new_status).await;
+            });
+        } else {
+            tokio::time::sleep(POLL_INTERVAL).await;
+        }
     }
 }
 
@@ -169,7 +237,7 @@ async fn process_mandelbrot_task(
     let img = generate_mandelbrot(task.width, task.height, task.max_iterations);
 
     let filename = format!("mandelbrot_{}.png", task_id);
-    save_image(img, &filename);
+    save_image(img, &filename)?;
 
     info!("Mandelbrot fractal saved as {}", filename);
     Ok(())
@@ -207,27 +275,28 @@ fn generate_mandelbrot(
 }
 
 /// Save image to disk
-fn save_image(img: ImageBuffer<Rgb<u8>, Vec<u8>>, filename: &str) {
-    img.save(filename).unwrap();
+fn save_image(img: ImageBuffer<Rgb<u8>, Vec<u8>>, filename: &str) -> Result<(), String> {
+    img.save(filename).map_err(|err| err.to_string())?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub enum TaskStatus {
     Ongoing,
+    // TODO: Consider providing some extra (task-specific) info on completed
     Completed,
     Failed(String),
 }
 
 #[async_trait]
 pub trait TaskStorage: Send + Sync + 'static {
-    async fn insert(&self, task_id: String, status: TaskStatus);
-    async fn update(&self, task_id: String, status: TaskStatus);
-    async fn get_tasks(&self) -> HashMap<String, TaskStatus>;
+    async fn insert(&self, task_id: Uuid, status: TaskStatus);
+    async fn update(&self, task_id: Uuid, status: TaskStatus);
+    async fn get_tasks(&self) -> HashMap<Uuid, TaskStatus>;
 }
 
 pub struct InMemoryStorage {
-    // TODO: String or Uuid?
-    tasks: AsyncRwLock<HashMap<String, TaskStatus>>,
+    tasks: AsyncRwLock<HashMap<Uuid, TaskStatus>>,
 }
 
 impl InMemoryStorage {
@@ -240,36 +309,36 @@ impl InMemoryStorage {
 
 #[async_trait]
 impl TaskStorage for InMemoryStorage {
-    async fn insert(&self, task_id: String, status: TaskStatus) {
+    async fn insert(&self, task_id: Uuid, status: TaskStatus) {
         let mut tasks = self.tasks.write().await;
         tasks.insert(task_id, status);
     }
 
-    async fn update(&self, task_id: String, status: TaskStatus) {
+    async fn update(&self, task_id: Uuid, status: TaskStatus) {
         let mut tasks = self.tasks.write().await;
         if let Some(task) = tasks.get_mut(&task_id) {
             *task = status;
         }
     }
 
-    async fn get_tasks(&self) -> HashMap<String, TaskStatus> {
+    async fn get_tasks(&self) -> HashMap<Uuid, TaskStatus> {
         self.tasks.read().await.clone()
     }
 }
 
 #[derive(Debug, Error)]
 pub enum TaskSchedulerError {
-    #[error("Failed to send task to queue")]
-    TaskQueueError(#[from] tokio::sync::mpsc::error::SendError<(String, Task)>),
+    #[error("Task queue is full")]
+    QueueFull,
+    #[error("The specific ID was not found")]
+    NoSuchId,
 }
 
 impl IntoResponse for TaskSchedulerError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
-            Self::TaskQueueError(err) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Task queue error: {:?}", err),
-            ),
+            Self::QueueFull => (StatusCode::TOO_MANY_REQUESTS, self.to_string()),
+            Self::NoSuchId => (StatusCode::NOT_FOUND, self.to_string()),
         };
 
         (status, Json(serde_json::json!({ "error": message }))).into_response()
@@ -282,11 +351,8 @@ pub mod tests {
 
     impl TaskScheduler<InMemoryStorage> {
         pub fn new_mock() -> Self {
-            let task_storage = Arc::new(InMemoryStorage::new());
-            let (tx, mut rx) = mpsc::channel(10);
-
-            tokio::spawn(async move { while let Some((_task_id, _task)) = rx.recv().await {} });
-            Self { tx, task_storage }
+            let task_storage = InMemoryStorage::new();
+            TaskScheduler::new(10, task_storage)
         }
     }
 }
