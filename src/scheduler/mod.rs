@@ -1,23 +1,18 @@
-use async_trait::async_trait;
 use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
     Json,
 };
-use image::{ImageBuffer, Rgb};
-use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use std::{
-    cmp::Ordering,
-    collections::{BinaryHeap, HashMap},
-    str::FromStr,
-    time::Duration,
-};
+use std::{cmp::Ordering, collections::BinaryHeap, str::FromStr, time::Duration};
 use thiserror::Error;
-use tokio::sync::{Mutex as AsyncMutex, RwLock as AsyncRwLock};
+use tokio::sync::Mutex as AsyncMutex;
 use tracing::info;
 use uuid::Uuid;
+
+use image::{ImageBuffer, Rgb};
+use rayon::prelude::*;
 
 use solana_rpc_client::rpc_client::RpcClient;
 use solana_sdk::{
@@ -28,6 +23,9 @@ use solana_sdk::{
     transaction::Transaction,
 };
 use solana_system_interface::instruction;
+
+pub mod storage;
+pub use storage::*;
 
 pub struct Task {
     id: Uuid,
@@ -85,15 +83,15 @@ pub struct MandelbrotComputeTask {
     pub max_iterations: u32,
 }
 
-pub struct TaskScheduler<T> {
+pub struct TaskScheduler {
     task_queue: Arc<AsyncMutex<BinaryHeap<Task>>>,
-    task_storage: Arc<T>,
+    task_storage: Arc<TaskStorageBackend>,
     max_tasks: usize,
 }
 
-impl<T: TaskStorage> TaskScheduler<T> {
+impl TaskScheduler {
     /// Initialize the scheduler with a channel
-    pub fn new(max_tasks: usize, task_storage: T) -> Self {
+    pub fn new(max_tasks: usize, task_storage: TaskStorageBackend) -> Self {
         let task_storage = Arc::new(task_storage);
         let task_queue = Arc::new(AsyncMutex::new(BinaryHeap::new()));
         tokio::spawn(run_scheduler(
@@ -142,9 +140,9 @@ impl<T: TaskStorage> TaskScheduler<T> {
     }
 }
 
-async fn run_scheduler<T: TaskStorage>(
+async fn run_scheduler(
     task_queue: Arc<AsyncMutex<BinaryHeap<Task>>>,
-    task_storage: Arc<T>,
+    task_storage: Arc<TaskStorageBackend>,
 ) {
     const POLL_INTERVAL: Duration = Duration::from_millis(100);
     loop {
@@ -288,44 +286,6 @@ pub enum TaskStatus {
     Failed(String),
 }
 
-#[async_trait]
-pub trait TaskStorage: Send + Sync + 'static {
-    async fn insert(&self, task_id: Uuid, status: TaskStatus);
-    async fn update(&self, task_id: Uuid, status: TaskStatus);
-    async fn get_tasks(&self) -> HashMap<Uuid, TaskStatus>;
-}
-
-pub struct InMemoryStorage {
-    tasks: AsyncRwLock<HashMap<Uuid, TaskStatus>>,
-}
-
-impl InMemoryStorage {
-    pub fn new() -> Self {
-        Self {
-            tasks: AsyncRwLock::new(HashMap::new()),
-        }
-    }
-}
-
-#[async_trait]
-impl TaskStorage for InMemoryStorage {
-    async fn insert(&self, task_id: Uuid, status: TaskStatus) {
-        let mut tasks = self.tasks.write().await;
-        tasks.insert(task_id, status);
-    }
-
-    async fn update(&self, task_id: Uuid, status: TaskStatus) {
-        let mut tasks = self.tasks.write().await;
-        if let Some(task) = tasks.get_mut(&task_id) {
-            *task = status;
-        }
-    }
-
-    async fn get_tasks(&self) -> HashMap<Uuid, TaskStatus> {
-        self.tasks.read().await.clone()
-    }
-}
-
 #[derive(Debug, Error)]
 pub enum TaskSchedulerError {
     #[error("Task queue is full")]
@@ -348,10 +308,12 @@ impl IntoResponse for TaskSchedulerError {
 #[cfg(test)]
 pub mod tests {
     use super::*;
+    use crate::scheduler::InMemoryStorage;
 
-    impl TaskScheduler<InMemoryStorage> {
+    impl TaskScheduler {
         pub fn new_mock() -> Self {
-            let task_storage = InMemoryStorage::new();
+            let backend = InMemoryStorage::new();
+            let task_storage = TaskStorageBackend::InMemory(backend);
             TaskScheduler::new(10, task_storage)
         }
     }

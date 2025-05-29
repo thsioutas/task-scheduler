@@ -21,8 +21,8 @@ async fn root() -> Json<RootResponse> {
     })
 }
 
-async fn task_collection<T: TaskStorage>(
-    State(task_scheduler): State<Arc<TaskScheduler<T>>>,
+async fn task_collection(
+    State(task_scheduler): State<Arc<TaskScheduler>>,
 ) -> Json<TasksCollectionResponse> {
     trace!("Get task collection");
     let ids = task_scheduler.get_tasks().await;
@@ -33,8 +33,8 @@ async fn task_collection<T: TaskStorage>(
     Json(TasksCollectionResponse { tasks })
 }
 
-async fn task_create<T: TaskStorage>(
-    State(task_scheduler): State<Arc<TaskScheduler<T>>>,
+async fn task_create(
+    State(task_scheduler): State<Arc<TaskScheduler>>,
     Json(payload): Json<TaskPayload>,
 ) -> Result<Json<TaskCreatedResponse>, TaskSchedulerError> {
     let task = payload;
@@ -45,8 +45,8 @@ async fn task_create<T: TaskStorage>(
     Ok(Json(TaskCreatedResponse { url }))
 }
 
-async fn get_task<T: TaskStorage>(
-    State(task_scheduler): State<Arc<TaskScheduler<T>>>,
+async fn get_task(
+    State(task_scheduler): State<Arc<TaskScheduler>>,
     Path(id): Path<String>,
 ) -> Result<Json<TaskResponse>, TaskSchedulerError> {
     trace!("Get task info: {}", id);
@@ -55,7 +55,7 @@ async fn get_task<T: TaskStorage>(
     Ok(Json(TaskResponse { id, status }))
 }
 
-pub fn configure_app<T: TaskStorage>(task_scheduler: Arc<TaskScheduler<T>>) -> Router {
+pub fn configure_app(task_scheduler: Arc<TaskScheduler>) -> Router {
     Router::new()
         .route("/scheduler", get(root))
         .route("/scheduler/tasks", get(task_collection).post(task_create))
